@@ -1,19 +1,18 @@
 import json
 from llm_client import call_llm
 
-DAILY_PLAN_PROMPT = """
+def get_daily_plan():
+    """
+    Ask the model for a daily plan and parse the JSON response.
+    """
+    system_msg = """
 You are a German teacher for a B1-B2 learner.
 
-Task:
-Create the content for one study session with:
-- One reading text in German, about 150 to 200 words.
-- Exactly 3 comprehension questions in German.
-- A small vocabulary list, 5 to 8 items, taken from the text, with:
-  - the German word
-  - a short English translation
-  - one German example sentence.
+You must output a single valid JSON object.
+It must be directly parseable by Python json.loads.
+Do not add any explanation, comments, markdown, code fences, or text before or after the JSON.
 
-Output JSON only, no explanations, with this schema:
+Required schema:
 
 {
   "reading_topic": "short description in English",
@@ -29,15 +28,37 @@ Output JSON only, no explanations, with this schema:
 }
 """
 
-def get_daily_plan():
-    content = call_llm([{"role": "user", "content": DAILY_PLAN_PROMPT}])
+    user_msg = """
+Create the content for one study session with:
+- One reading text in German, about 150 to 200 words.
+- Exactly 3 comprehension questions in German.
+- A small vocabulary list, 5 to 8 items, taken from the text, with:
+  - the German word
+  - a short English translation
+  - one German example sentence.
 
-    # Make it robust to extra text around the JSON
-    start = content.find("{")
-    end = content.rfind("}")
-    json_str = content[start:end + 1]
+Remember: output only the JSON object, nothing else.
+"""
 
-    return json.loads(json_str)
+    content = call_llm(
+        [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ]
+    )
+
+    # Try to parse the whole content as JSON
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        # Fallback: try to cut from first { to last }
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1:
+            json_str = content[start : end + 1]
+            return json.loads(json_str)
+        # If this still fails, raise a helpful error for debugging
+        raise RuntimeError(f"Model returned non JSON content: {content!r}")
 
 
 def check_answers(reading_text, questions, answers_dict):
@@ -46,10 +67,12 @@ def check_answers(reading_text, questions, answers_dict):
     questions: list of {"id": int, "question": str}
     answers_dict: {id: user_answer_str}
     """
-    prompt = "Here is a German reading text:\n\n"
+    prompt = "Hier ist ein deutscher Lesetext:\n\n"
     prompt += reading_text + "\n\n"
-    prompt += "Here are the comprehension questions and my answers.\n"
-    prompt += "Please respond in German with brief feedback and give the correct answers.\n"
+    prompt += (
+        "Hier sind die Verständnisfragen und meine Antworten.\n"
+        "Gib bitte auf Deutsch kurzes Feedback und die richtigen Antworten.\n"
+    )
 
     for q in questions:
         qid = q["id"]

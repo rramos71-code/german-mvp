@@ -4,163 +4,12 @@ from llm_client import call_llm
 
 def _safe_json_loads(text: str) -> dict:
     t = (text or "").strip()
-
-    # best effort extraction if something wraps JSON
     if not t.startswith("{"):
         start = t.find("{")
         end = t.rfind("}")
         if start != -1 and end != -1 and end > start:
             t = t[start : end + 1]
-
     return json.loads(t)
-
-
-def get_reading_block(level: str = "B1", topic: str = "Alltag") -> dict:
-    system_msg = f"""
-You are a German teacher for a {level} learner.
-
-Return ONLY a single valid JSON object (no markdown, no code fences, no extra text).
-
-Schema:
-{{
-  "reading_topic": "short description in English",
-  "reading_text": "German text (150-200 words)",
-  "questions": [
-    {{"id": 1, "question": "German question 1"}},
-    {{"id": 2, "question": "German question 2"}},
-    {{"id": 3, "question": "German question 3"}}
-  ],
-  "vocabulary": [
-    {{"word": "German", "translation": "English", "example": "German example sentence"}}
-  ]
-}}
-
-Hard constraints:
-- questions length is exactly 3 and ids are 1,2,3
-- vocabulary length is 5 to 8
-- reading must match topic "{topic}" and be appropriate for {level}
-"""
-
-    user_msg = f"""
-Create a reading-based study session for the topic "{topic}" at level {level}.
-
-Requirements:
-- reading_text: 150 to 200 words in German
-- questions: exactly 3 comprehension questions in German
-- vocabulary: 5 to 8 items taken from the text, each with word, English translation, German example
-
-Return ONLY the JSON object.
-"""
-
-    content = call_llm(
-        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        max_tokens=1400,
-    )
-    return _safe_json_loads(content)
-
-
-def get_grammar_block(level: str = "B1", topic: str = "Alltag", reading_text: str = "") -> dict:
-    system_msg = f"""
-You are a German teacher for a {level} learner.
-
-Return ONLY a single valid JSON object.
-
-Schema:
-{{
-  "grammar": {{
-    "topic": "grammar topic in English or German",
-    "explanation": "short explanation in German, max 6 sentences",
-    "examples": ["Beispiel 1", "Beispiel 2", "Beispiel 3"],
-    "exercises": [
-      {{"id": 1, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}},
-      {{"id": 2, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}},
-      {{"id": 3, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}}
-    ]
-  }}
-}}
-
-Hard constraints:
-- grammar.examples length is 3 to 5
-- grammar.exercises length is exactly 3 with ids 1,2,3
-- each exercise prompt contains "____"
-- match level {level}
-"""
-
-    reading_context = (reading_text or "").strip()
-
-    user_msg = f"""
-Create a grammar section for the topic "{topic}" at level {level}.
-
-Align the grammar point and examples with this reading text if possible:
-\"\"\"{reading_context}\"\"\"
-
-Requirements:
-- one grammar focus that fits {level}
-- explanation: German, max 6 sentences
-- examples: 3 to 5 sentences
-- exercises: exactly 3, prompts include "____", include answer and answer_explanation
-
-Return ONLY the JSON object.
-"""
-
-    content = call_llm(
-        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        max_tokens=1200,
-    )
-    return _safe_json_loads(content)
-
-
-def get_grammar_exercises_only(level: str, grammar_topic: str) -> dict:
-    system_msg = f"""
-You are a German teacher for a {level} learner.
-Return ONLY JSON.
-
-Schema:
-{{
-  "exercises": [
-    {{"id": 1, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected", "answer_explanation": "German"}},
-    {{"id": 2, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected", "answer_explanation": "German"}},
-    {{"id": 3, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected", "answer_explanation": "German"}}
-  ]
-}}
-
-Hard constraints:
-- length exactly 3, ids 1..3
-- each prompt contains "____"
-- exercises match topic: "{grammar_topic}"
-"""
-
-    user_msg = f"""
-Create 3 new fill-in-the-blank exercises for the grammar topic "{grammar_topic}" at level {level}.
-Return ONLY the JSON object.
-"""
-
-    content = call_llm(
-        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        max_tokens=900,
-    )
-    return _safe_json_loads(content)
-
-
-def get_daily_plan(level: str = "B1", topic: str = "Alltag") -> dict:
-    reading_block = get_reading_block(level=level, topic=topic)
-    reading_text = reading_block.get("reading_text", "")
-
-    grammar_block = get_grammar_block(level=level, topic=topic, reading_text=reading_text)
-
-    plan = {}
-    plan.update(reading_block)
-    plan.update(grammar_block)
-
-    plan = _normalize_plan(plan)
-    _validate_plan(plan)
-    return plan
 
 
 def _normalize_plan(plan: dict) -> dict:
@@ -237,26 +86,257 @@ def _validate_plan(plan: dict) -> None:
             raise RuntimeError("Exercise prompt missing ____")
 
 
+def _validate_vocab(vocab: list, reading_text: str, n_min: int, n_max: int) -> None:
+    if not isinstance(vocab, list):
+        raise RuntimeError("Vocabulary is not a list")
+
+    if not (n_min <= len(vocab) <= n_max):
+        raise RuntimeError("Vocabulary length invalid")
+
+    seen = set()
+    rt_lower = (reading_text or "").lower()
+
+    for item in vocab:
+        if not isinstance(item, dict):
+            raise RuntimeError("Vocabulary item not a dict")
+        w = (item.get("word") or "").strip()
+        if not w:
+            raise RuntimeError("Vocabulary word missing")
+        w_lower = w.lower()
+        if w_lower in seen:
+            raise RuntimeError("Duplicate vocabulary word")
+        seen.add(w_lower)
+
+        # best-effort: word should appear in the reading text
+        if rt_lower and w_lower not in rt_lower:
+            # allow small mismatch once in a while, but generally enforce
+            raise RuntimeError(f"Vocabulary word not found in reading text: {w}")
+
+
+def get_reading_block(level: str = "B1", topic: str = "Alltag", word_min: int = 150, word_max: int = 200, vocab_min: int = 5, vocab_max: int = 8) -> dict:
+    system_msg = f"""
+You are a German teacher for a {level} learner.
+
+Return ONLY a single valid JSON object.
+
+Schema:
+{{
+  "reading_topic": "short description in English",
+  "reading_text": "German text",
+  "questions": [
+    {{"id": 1, "question": "German question 1"}},
+    {{"id": 2, "question": "German question 2"}},
+    {{"id": 3, "question": "German question 3"}}
+  ],
+  "vocabulary": [
+    {{"word": "German", "translation": "English", "example": "German example sentence"}}
+  ]
+}}
+
+Hard constraints:
+- reading_text length: {word_min}-{word_max} words
+- questions: exactly 3 with ids 1,2,3
+- vocabulary length: {vocab_min}-{vocab_max}
+- vocabulary words must be taken from the reading_text
+- topic: "{topic}"
+"""
+
+    user_msg = f"""
+Create a reading session for topic "{topic}" at level {level}.
+
+- reading_text: {word_min}-{word_max} words in German
+- questions: exactly 3 comprehension questions in German
+- vocabulary: {vocab_min}-{vocab_max} items taken from the text, each with English translation and German example sentence
+
+Return ONLY the JSON object.
+"""
+
+    content = call_llm(
+        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=1700,
+    )
+    plan = _safe_json_loads(content)
+    return plan
+
+
+def get_vocab_block(level: str, topic: str, reading_text: str, n_items: int) -> dict:
+    system_msg = f"""
+You are a German teacher for a {level} learner.
+Return ONLY a single valid JSON object.
+
+Schema:
+{{
+  "vocabulary": [
+    {{"word": "German word from the text", "translation": "English", "example": "German example sentence"}}
+  ]
+}}
+
+Hard constraints:
+- vocabulary length exactly {n_items}
+- every 'word' must appear in the given reading_text
+- all words must be unique
+"""
+
+    user_msg = f"""
+From this reading text, extract exactly {n_items} useful vocabulary items (B1-B2 level).
+For each: German word (must appear in text), English translation, one German example sentence.
+
+Topic: "{topic}"
+
+Reading text:
+\"\"\"{reading_text}\"\"\"
+
+Return ONLY the JSON object.
+"""
+
+    content = call_llm(
+        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=900,
+    )
+    return _safe_json_loads(content)
+
+
+def get_grammar_block(level: str = "B1", topic: str = "Alltag", reading_text: str = "") -> dict:
+    system_msg = f"""
+You are a German teacher for a {level} learner.
+
+Return ONLY a single valid JSON object.
+
+Schema:
+{{
+  "grammar": {{
+    "topic": "grammar topic in English or German",
+    "explanation": "short explanation in German, max 6 sentences",
+    "examples": ["Beispiel 1", "Beispiel 2", "Beispiel 3"],
+    "exercises": [
+      {{"id": 1, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}},
+      {{"id": 2, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}},
+      {{"id": 3, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}}
+    ]
+  }}
+}}
+
+Hard constraints:
+- grammar.examples length is 3 to 5
+- grammar.exercises length is exactly 3 with ids 1..3
+- each exercise prompt contains "____"
+"""
+
+    reading_context = (reading_text or "").strip()
+
+    user_msg = f"""
+Create a grammar section for topic "{topic}" at level {level}.
+
+Align the grammar point and examples with this reading text if possible:
+\"\"\"{reading_context}\"\"\"
+
+Return ONLY the JSON object.
+"""
+
+    content = call_llm(
+        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=1200,
+    )
+    return _safe_json_loads(content)
+
+
+def get_grammar_exercises_only(level: str, grammar_topic: str) -> dict:
+    system_msg = f"""
+You are a German teacher for a {level} learner.
+Return ONLY JSON.
+
+Schema:
+{{
+  "exercises": [
+    {{"id": 1, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected", "answer_explanation": "German"}},
+    {{"id": 2, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected", "answer_explanation": "German"}},
+    {{"id": 3, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected", "answer_explanation": "German"}}
+  ]
+}}
+
+Hard constraints:
+- length exactly 3, ids 1..3
+- each prompt contains "____"
+- match topic: "{grammar_topic}"
+"""
+
+    user_msg = f"""
+Create 3 new fill-in-the-blank exercises for grammar topic "{grammar_topic}" at level {level}.
+Return ONLY the JSON object.
+"""
+
+    content = call_llm(
+        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=900,
+    )
+    return _safe_json_loads(content)
+
+
+def get_daily_plan(level: str = "B1", topic: str = "Alltag", session_length: str = "20") -> dict:
+    # session_length: "10" or "20"
+    if session_length == "10":
+        word_min, word_max = 120, 160
+        vocab_min, vocab_max = 5, 5
+        vocab_exact = 5
+    else:
+        word_min, word_max = 180, 240
+        vocab_min, vocab_max = 8, 8
+        vocab_exact = 8
+
+    # Generate reading + vocab, validate vocab, retry once if needed
+    reading_block = get_reading_block(
+        level=level,
+        topic=topic,
+        word_min=word_min,
+        word_max=word_max,
+        vocab_min=vocab_min,
+        vocab_max=vocab_max,
+    )
+
+    reading_text = reading_block.get("reading_text", "")
+    vocab = reading_block.get("vocabulary", [])
+
+    try:
+        _validate_vocab(vocab, reading_text, vocab_min, vocab_max)
+    except Exception:
+        # regenerate vocab from the reading once
+        vb = get_vocab_block(level=level, topic=topic, reading_text=reading_text, n_items=vocab_exact)
+        reading_block["vocabulary"] = vb.get("vocabulary", [])
+
+    grammar_block = get_grammar_block(level=level, topic=topic, reading_text=reading_text)
+
+    plan = {}
+    plan.update(reading_block)
+    plan.update(grammar_block)
+
+    plan = _normalize_plan(plan)
+    _validate_plan(plan)
+    return plan
+
+
 def check_answers(reading_text, questions, answers_dict):
     system_msg = """
-Return ONLY a single valid JSON object. No markdown, no extra text.
+Return ONLY a single valid JSON object. No extra text.
 
 Schema:
 {
   "results": [
-    {"id": 1, "verdict": "correct|partly|incorrect"},
-    {"id": 2, "verdict": "correct|partly|incorrect"},
-    {"id": 3, "verdict": "correct|partly|incorrect"}
+    {"id": 1, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"},
+    {"id": 2, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"},
+    {"id": 3, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"}
   ],
-  "overall_tip": "German",
-  "ideal_answers": [
-    {"id": 1, "ideal_answer": "German", "tip": "German"},
-    {"id": 2, "ideal_answer": "German", "tip": "German"},
-    {"id": 3, "ideal_answer": "German", "tip": "German"}
-  ]
+  "overall_tip": "German"
 }
 Rules:
-- Keep tips short (one sentence).
+- tips: one short sentence
 """
 
     prompt = "Hier ist ein deutscher Lesetext:\n\n"
@@ -277,29 +357,12 @@ Rules:
         temperature=0.1,
         max_tokens=900,
     )
-    data = _safe_json_loads(content)
-
-    # Normalize to the format the UI expects (results with ideal_answer and tip inline)
-    # UI expects: results: [{id, verdict, ideal_answer, tip}], plus overall_tip
-    verdicts = {r.get("id"): r.get("verdict") for r in data.get("results", []) if isinstance(r, dict)}
-    ideals = {r.get("id"): r for r in data.get("ideal_answers", []) if isinstance(r, dict)}
-
-    results = []
-    for i in [1, 2, 3]:
-        item = {
-            "id": i,
-            "verdict": verdicts.get(i, "incorrect"),
-            "ideal_answer": (ideals.get(i) or {}).get("ideal_answer", ""),
-            "tip": (ideals.get(i) or {}).get("tip", ""),
-        }
-        results.append(item)
-
-    return {"results": results, "overall_tip": data.get("overall_tip", "")}
+    return _safe_json_loads(content)
 
 
 def check_grammar(grammar, user_answers_dict):
     system_msg = """
-Return ONLY a single valid JSON object. No markdown, no extra text.
+Return ONLY a single valid JSON object. No extra text.
 
 Schema:
 {

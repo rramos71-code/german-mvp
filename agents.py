@@ -86,11 +86,10 @@ def _validate_plan(plan: dict) -> None:
             raise RuntimeError("Exercise prompt missing ____")
 
 
-def _validate_vocab(vocab: list, reading_text: str, n_min: int, n_max: int) -> None:
+def _validate_vocab(vocab: list, reading_text: str, n_exact: int) -> None:
     if not isinstance(vocab, list):
         raise RuntimeError("Vocabulary is not a list")
-
-    if not (n_min <= len(vocab) <= n_max):
+    if len(vocab) != n_exact:
         raise RuntimeError("Vocabulary length invalid")
 
     seen = set()
@@ -107,13 +106,31 @@ def _validate_vocab(vocab: list, reading_text: str, n_min: int, n_max: int) -> N
             raise RuntimeError("Duplicate vocabulary word")
         seen.add(w_lower)
 
-        # best-effort: word should appear in the reading text
         if rt_lower and w_lower not in rt_lower:
-            # allow small mismatch once in a while, but generally enforce
             raise RuntimeError(f"Vocabulary word not found in reading text: {w}")
 
 
-def get_reading_block(level: str = "B1", topic: str = "Alltag", word_min: int = 150, word_max: int = 200, vocab_min: int = 5, vocab_max: int = 8) -> dict:
+def _session_params(session_length: str):
+    if session_length == "10":
+        return {
+            "word_min": 120,
+            "word_max": 160,
+            "vocab_n": 5,
+        }
+    return {
+        "word_min": 180,
+        "word_max": 240,
+        "vocab_n": 8,
+    }
+
+
+def get_reading_block(
+    level: str = "B1",
+    topic: str = "Alltag",
+    word_min: int = 150,
+    word_max: int = 200,
+    vocab_n: int = 8,
+) -> dict:
     system_msg = f"""
 You are a German teacher for a {level} learner.
 
@@ -136,7 +153,7 @@ Schema:
 Hard constraints:
 - reading_text length: {word_min}-{word_max} words
 - questions: exactly 3 with ids 1,2,3
-- vocabulary length: {vocab_min}-{vocab_max}
+- vocabulary length: exactly {vocab_n}
 - vocabulary words must be taken from the reading_text
 - topic: "{topic}"
 """
@@ -146,7 +163,7 @@ Create a reading session for topic "{topic}" at level {level}.
 
 - reading_text: {word_min}-{word_max} words in German
 - questions: exactly 3 comprehension questions in German
-- vocabulary: {vocab_min}-{vocab_max} items taken from the text, each with English translation and German example sentence
+- vocabulary: exactly {vocab_n} items taken from the text, each with English translation and German example sentence
 
 Return ONLY the JSON object.
 """
@@ -157,8 +174,7 @@ Return ONLY the JSON object.
         temperature=0.2,
         max_tokens=1700,
     )
-    plan = _safe_json_loads(content)
-    return plan
+    return _safe_json_loads(content)
 
 
 def get_vocab_block(level: str, topic: str, reading_text: str, n_items: int) -> dict:
@@ -180,7 +196,7 @@ Hard constraints:
 """
 
     user_msg = f"""
-From this reading text, extract exactly {n_items} useful vocabulary items (B1-B2 level).
+From this reading text, extract exactly {n_items} useful vocabulary items.
 For each: German word (must appear in text), English translation, one German example sentence.
 
 Topic: "{topic}"
@@ -281,34 +297,24 @@ Return ONLY the JSON object.
 
 
 def get_daily_plan(level: str = "B1", topic: str = "Alltag", session_length: str = "20") -> dict:
-    # session_length: "10" or "20"
-    if session_length == "10":
-        word_min, word_max = 120, 160
-        vocab_min, vocab_max = 5, 5
-        vocab_exact = 5
-    else:
-        word_min, word_max = 180, 240
-        vocab_min, vocab_max = 8, 8
-        vocab_exact = 8
+    params = _session_params(session_length)
+    vocab_n = params["vocab_n"]
 
-    # Generate reading + vocab, validate vocab, retry once if needed
     reading_block = get_reading_block(
         level=level,
         topic=topic,
-        word_min=word_min,
-        word_max=word_max,
-        vocab_min=vocab_min,
-        vocab_max=vocab_max,
+        word_min=params["word_min"],
+        word_max=params["word_max"],
+        vocab_n=vocab_n,
     )
 
     reading_text = reading_block.get("reading_text", "")
     vocab = reading_block.get("vocabulary", [])
 
     try:
-        _validate_vocab(vocab, reading_text, vocab_min, vocab_max)
+        _validate_vocab(vocab, reading_text, vocab_n)
     except Exception:
-        # regenerate vocab from the reading once
-        vb = get_vocab_block(level=level, topic=topic, reading_text=reading_text, n_items=vocab_exact)
+        vb = get_vocab_block(level=level, topic=topic, reading_text=reading_text, n_items=vocab_n)
         reading_block["vocabulary"] = vb.get("vocabulary", [])
 
     grammar_block = get_grammar_block(level=level, topic=topic, reading_text=reading_text)
@@ -324,7 +330,7 @@ def get_daily_plan(level: str = "B1", topic: str = "Alltag", session_length: str
 
 def check_answers(reading_text, questions, answers_dict):
     system_msg = """
-Return ONLY a single valid JSON object. No extra text.
+Return ONLY a single valid JSON object.
 
 Schema:
 {
@@ -362,7 +368,7 @@ Rules:
 
 def check_grammar(grammar, user_answers_dict):
     system_msg = """
-Return ONLY a single valid JSON object. No extra text.
+Return ONLY a single valid JSON object.
 
 Schema:
 {

@@ -3,6 +3,7 @@ from agents import (
     get_daily_plan,
     get_reading_block,
     get_grammar_block,
+    get_vocab_block,
     get_grammar_exercises_only,
     check_answers,
     check_grammar,
@@ -35,6 +36,12 @@ def _calc_scores():
     return reading_score, grammar_score
 
 
+def _session_params(session_length: str):
+    if session_length == "10":
+        return {"word_min": 120, "word_max": 160, "vocab_n": 5}
+    return {"word_min": 180, "word_max": 240, "vocab_n": 8}
+
+
 if page == "Dashboard":
     st.title("German Learning Dashboard")
 
@@ -43,7 +50,6 @@ if page == "Dashboard":
         st.info("No saved sessions yet. Go to 'Today's session' and click 'Save session'.")
     else:
         st.subheader("Recent sessions")
-        # Show latest first
         for s in reversed(sessions):
             dt = s.get("timestamp", "")
             lv = s.get("level", "")
@@ -64,6 +70,9 @@ if page == "Today's session":
         ["Alltag", "Arbeit", "Reisen", "Gesundheit", "Meetings", "Small Talk"],
         index=0,
     )
+    session_length = st.sidebar.radio("Session length", ["10", "20"], index=1, format_func=lambda x: f"{x} min")
+
+    params = _session_params(session_length)
 
     col_a, col_b, col_c, col_d = st.columns(4)
 
@@ -73,8 +82,8 @@ if page == "Today's session":
             st.session_state.pop("feedback", None)
             st.session_state.pop("grammar_feedback", None)
             try:
-                st.session_state.plan = get_daily_plan(level=level, topic=topic)
-                st.session_state.plan_meta = {"level": level, "topic": topic}
+                st.session_state.plan = get_daily_plan(level=level, topic=topic, session_length=session_length)
+                st.session_state.plan_meta = {"level": level, "topic": topic, "session_length": session_length}
             except RuntimeError as e:
                 st.error(f"Could not generate plan: {e}")
 
@@ -86,9 +95,15 @@ if page == "Today's session":
                 _clear_state_by_prefix(["q_"])
                 st.session_state.pop("feedback", None)
                 try:
-                    reading_block = get_reading_block(level=level, topic=topic)
+                    reading_block = get_reading_block(
+                        level=level,
+                        topic=topic,
+                        word_min=params["word_min"],
+                        word_max=params["word_max"],
+                        vocab_n=params["vocab_n"],
+                    )
                     st.session_state.plan.update(reading_block)
-                    st.session_state.plan_meta = {"level": level, "topic": topic}
+                    st.session_state.plan_meta = {"level": level, "topic": topic, "session_length": session_length}
                 except RuntimeError as e:
                     st.error(f"Could not regenerate reading: {e}")
 
@@ -103,7 +118,7 @@ if page == "Today's session":
                     reading_text = st.session_state.plan.get("reading_text", "")
                     grammar_block = get_grammar_block(level=level, topic=topic, reading_text=reading_text)
                     st.session_state.plan.update(grammar_block)
-                    st.session_state.plan_meta = {"level": level, "topic": topic}
+                    st.session_state.plan_meta = {"level": level, "topic": topic, "session_length": session_length}
                 except RuntimeError as e:
                     st.error(f"Could not regenerate grammar: {e}")
 
@@ -123,7 +138,9 @@ if page == "Today's session":
     else:
         meta = st.session_state.get("plan_meta", {})
         if meta:
-            st.caption(f"Level: {meta.get('level', level)} | Topic: {meta.get('topic', topic)}")
+            st.caption(
+                f"Level: {meta.get('level', level)} | Topic: {meta.get('topic', topic)} | Session: {meta.get('session_length', session_length)} min"
+            )
 
         st.subheader("Reading topic")
         st.write(plan.get("reading_topic", ""))
@@ -145,6 +162,34 @@ if page == "Today's session":
             answers[qid] = st.text_input(question_text, key=f"q_{qid}")
 
         st.subheader("Vocabulary")
+
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
+            if st.button("Regenerate vocabulary"):
+                if not reading_text:
+                    st.warning("No reading text found.")
+                else:
+                    st.session_state.pop("feedback", None)
+                    try:
+                        vb = get_vocab_block(level=level, topic=topic, reading_text=reading_text, n_items=params["vocab_n"])
+                        st.session_state.plan["vocabulary"] = vb.get("vocabulary", [])
+                        st.success("Vocabulary regenerated.")
+                    except RuntimeError as e:
+                        st.error(f"Could not regenerate vocabulary: {e}")
+
+        with col_v2:
+            csv_text = make_vocab_csv_rows(
+                plan.get("vocabulary", []),
+                level=meta.get("level", level),
+                topic=meta.get("topic", topic),
+            )
+            st.download_button(
+                "Export vocabulary (CSV)",
+                data=csv_text.encode("utf-8"),
+                file_name="vocabulary_export.csv",
+                mime="text/csv",
+            )
+
         vocab = plan.get("vocabulary", [])
         if vocab:
             for item in vocab:
@@ -165,7 +210,6 @@ if page == "Today's session":
         if "feedback" in st.session_state:
             st.subheader("Feedback")
             fb = st.session_state.feedback
-
             if isinstance(fb, dict):
                 for r in fb.get("results", []):
                     st.markdown(f"**Frage {r.get('id')}** - {r.get('verdict')}")
@@ -260,31 +304,19 @@ if page == "Today's session":
             if reading_score is not None and grammar_score is not None:
                 st.success(f"Overall: {reading_score + grammar_score}/6 correct")
 
-        st.subheader("Save and export")
+        st.subheader("Save")
 
-        col_s1, col_s2 = st.columns(2)
-
-        with col_s1:
-            if st.button("Save session"):
-                ts = utc_now_iso()
-                meta = st.session_state.get("plan_meta", {"level": level, "topic": topic})
-                record = {
-                    "timestamp": ts,
-                    "level": meta.get("level", level),
-                    "topic": meta.get("topic", topic),
-                    "reading_topic": plan.get("reading_topic", ""),
-                    "reading_score": reading_score,
-                    "grammar_score": grammar_score,
-                    "vocabulary": plan.get("vocabulary", []),
-                }
-                append_session(record)
-                st.success("Saved.")
-
-        with col_s2:
-            csv_text = make_vocab_csv_rows(plan.get("vocabulary", []), level=meta.get("level", level), topic=meta.get("topic", topic))
-            st.download_button(
-                "Export vocabulary (CSV)",
-                data=csv_text.encode("utf-8"),
-                file_name="vocabulary_export.csv",
-                mime="text/csv",
-            )
+        if st.button("Save session"):
+            ts = utc_now_iso()
+            record = {
+                "timestamp": ts,
+                "level": meta.get("level", level),
+                "topic": meta.get("topic", topic),
+                "session_length": meta.get("session_length", session_length),
+                "reading_topic": plan.get("reading_topic", ""),
+                "reading_score": reading_score,
+                "grammar_score": grammar_score,
+                "vocabulary": plan.get("vocabulary", []),
+            }
+            append_session(record)
+            st.success("Saved.")

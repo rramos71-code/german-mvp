@@ -3,139 +3,137 @@ from llm_client import call_llm
 
 
 def _safe_json_loads(text: str) -> dict:
-    """
-    Parse JSON robustly. With Groq JSON mode this should succeed,
-    but we still keep a safe fallback for edge cases.
-    """
     t = (text or "").strip()
-
-    # If somehow extra text exists, try extracting the first JSON object
     if not t.startswith("{"):
         start = t.find("{")
         end = t.rfind("}")
         if start != -1 and end != -1 and end > start:
             t = t[start : end + 1]
-
     return json.loads(t)
 
 
-def get_daily_plan():
-    system_msg = """
-You are a German teacher for a B1-B2 learner.
+def get_reading_block(level: str = "B1", topic: str = "Alltag") -> dict:
+    system_msg = f"""
+You are a German teacher for a {level} learner.
 
-Return ONLY a single valid JSON object.
-No markdown, no code fences, no comments, no extra text.
+Return ONLY a single valid JSON object (no markdown, no code fences, no extra text).
 
 Schema:
-{
+{{
   "reading_topic": "short description in English",
   "reading_text": "German text (150-200 words)",
   "questions": [
-    {"id": 1, "question": "German question 1"},
-    {"id": 2, "question": "German question 2"},
-    {"id": 3, "question": "German question 3"}
+    {{"id": 1, "question": "German question 1"}},
+    {{"id": 2, "question": "German question 2"}},
+    {{"id": 3, "question": "German question 3"}}
   ],
   "vocabulary": [
-    {"word": "German", "translation": "English", "example": "German example sentence"}
-  ],
-  "grammar": {
+    {{"word": "German", "translation": "English", "example": "German example sentence"}}
+  ]
+}}
+
+Hard constraints:
+- questions length is exactly 3 and ids are 1,2,3
+- vocabulary length is 5 to 8
+- The reading must match the topic "{topic}" and be appropriate for {level}.
+"""
+
+    user_msg = f"""
+Create a reading-based study session for the topic "{topic}" at level {level}.
+
+Requirements:
+- reading_text: 150 to 200 words in German
+- questions: exactly 3 comprehension questions in German
+- vocabulary: 5 to 8 items taken from the text, each with:
+  - word (German)
+  - translation (English)
+  - example (German example sentence)
+
+Return ONLY the JSON object.
+"""
+
+    content = call_llm(
+        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        max_tokens=1400,
+    )
+    return _safe_json_loads(content)
+
+
+def get_grammar_block(level: str = "B1", topic: str = "Alltag", reading_text: str = "") -> dict:
+    system_msg = f"""
+You are a German teacher for a {level} learner.
+
+Return ONLY a single valid JSON object.
+
+Schema:
+{{
+  "grammar": {{
     "topic": "grammar topic in English or German",
     "explanation": "short explanation in German, max 6 sentences",
     "examples": ["Beispiel 1", "Beispiel 2", "Beispiel 3"],
     "exercises": [
-      {"id": 1, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"},
-      {"id": 2, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"},
-      {"id": 3, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}
+      {{"id": 1, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}},
+      {{"id": 2, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}},
+      {{"id": 3, "instruction": "German instruction", "prompt": "Ein Satz mit ____", "answer": "expected answer", "answer_explanation": "Warum ist das korrekt"}}
     ]
-  }
-}
+  }}
+}}
+
+Hard constraints:
+- grammar.examples length is 3 to 5
+- grammar.exercises length is exactly 3 with ids 1,2,3
+- each exercise prompt contains "____"
+- Difficulty and wording should match level {level}
 """
 
-    user_msg = """
-Create one study session:
-- Reading: German text 150 to 200 words.
-- Questions: exactly 3 comprehension questions in German.
-- Vocabulary: 5 to 8 items from the text (word, English translation, German example sentence).
-- Grammar:
-  - topic title (English or German)
-  - explanation in German (max 6 sentences)
-  - examples: 3 to 5 German example sentences
-  - exercises: exactly 3 exercises with ids 1,2,3
-  - each exercise has instruction, prompt containing "____", answer, answer_explanation (1-2 sentences).
+    reading_context = (reading_text or "").strip()
+
+    user_msg = f"""
+Create a grammar section for the topic "{topic}" at level {level}.
+
+If possible, align the grammar point and examples with this reading text:
+\"\"\"{reading_context}\"\"\"
+
+Requirements:
+- Choose one grammar focus that fits {level} and matches the topic
+- explanation: German, max 6 sentences
+- examples: 3 to 5 German example sentences
+- exercises: exactly 3 fill-in-the-blank exercises using "____", include answer and answer_explanation
+
 Return ONLY the JSON object.
 """
 
-    # Force JSON mode so Groq must return a JSON object
     content = call_llm(
-        [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg},
-        ],
+        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
         response_format={"type": "json_object"},
         temperature=0.2,
-        max_tokens=1600,
+        max_tokens=1200,
     )
+    return _safe_json_loads(content)
+
+
+def get_daily_plan(level: str = "B1", topic: str = "Alltag") -> dict:
+    try:
+        reading_block = get_reading_block(level=level, topic=topic)
+    except Exception as e:
+        raise RuntimeError(f"Failed to generate reading block: {e}")
+
+    reading_text = reading_block.get("reading_text", "")
 
     try:
-        plan = _safe_json_loads(content)
-    except Exception:
-        # If something still slips through, do one strict repair in JSON mode
-        repaired = _repair_plan_with_llm(content)
-        plan = _safe_json_loads(repaired)
+        grammar_block = get_grammar_block(level=level, topic=topic, reading_text=reading_text)
+    except Exception as e:
+        raise RuntimeError(f"Failed to generate grammar block: {e}")
+
+    plan = {}
+    plan.update(reading_block)
+    plan.update(grammar_block)
 
     plan = _normalize_plan(plan)
     _validate_plan(plan)
     return plan
-
-
-def _repair_plan_with_llm(raw_content: str) -> str:
-    repair_system = """
-You are a strict JSON fixer.
-
-Return ONLY a single valid JSON object and nothing else.
-No markdown, no code fences, no extra text.
-
-The output must match this schema:
-{
-  "reading_topic": "string",
-  "reading_text": "string",
-  "questions": [
-    {"id": 1, "question": "string"},
-    {"id": 2, "question": "string"},
-    {"id": 3, "question": "string"}
-  ],
-  "vocabulary": [
-    {"word": "string", "translation": "string", "example": "string"}
-  ],
-  "grammar": {
-    "topic": "string",
-    "explanation": "string",
-    "examples": ["string", "string", "string"],
-    "exercises": [
-      {"id": 1, "instruction": "string", "prompt": "string with ____", "answer": "string", "answer_explanation": "string"},
-      {"id": 2, "instruction": "string", "prompt": "string with ____", "answer": "string", "answer_explanation": "string"},
-      {"id": 3, "instruction": "string", "prompt": "string with ____", "answer": "string", "answer_explanation": "string"}
-    ]
-  }
-}
-
-Hard constraints:
-- grammar.examples length is 3 to 5
-- grammar.exercises length is exactly 3
-- each exercise prompt contains "____"
-"""
-
-    repair_user = f"Fix this into valid JSON following the schema:\n\n{raw_content}"
-
-    return call_llm(
-        [
-            {"role": "system", "content": repair_system},
-            {"role": "user", "content": repair_user},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.0,
-        max_tokens=1800,
-    )
 
 
 def _normalize_plan(plan: dict) -> dict:
@@ -160,7 +158,6 @@ def _normalize_plan(plan: dict) -> dict:
         grammar["exercises"] = []
     plan["grammar"] = grammar
 
-    # Normalize examples to 3..5
     examples = [str(x).strip() for x in grammar["examples"] if str(x).strip()]
     if len(examples) < 3:
         while len(examples) < 3:
@@ -169,7 +166,6 @@ def _normalize_plan(plan: dict) -> dict:
         examples = examples[:5]
     grammar["examples"] = examples
 
-    # Normalize exercises to exactly 3 with ids 1..3
     exercises = [x for x in grammar["exercises"] if isinstance(x, dict)]
     exercises = exercises[:3]
     while len(exercises) < 3:
@@ -180,7 +176,7 @@ def _normalize_plan(plan: dict) -> dict:
                 "instruction": "Setze das richtige Wort ein.",
                 "prompt": "Ich ____ heute zu Hause.",
                 "answer": "bin",
-                "answer_explanation": "Hier steht das Verb „sein“ im Präsens: „ich bin“."
+                "answer_explanation": "Hier steht das Verb „sein“ im Präsens: „ich bin“.",
             }
         )
 

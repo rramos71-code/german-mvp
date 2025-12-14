@@ -335,14 +335,17 @@ Return ONLY a single valid JSON object.
 Schema:
 {
   "results": [
-    {"id": 1, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"},
-    {"id": 2, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"},
-    {"id": 3, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"}
+    {"id": 1, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German", "reason": "missing|content"},
+    {"id": 2, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German", "reason": "missing|content"},
+    {"id": 3, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German", "reason": "missing|content"}
   ],
   "overall_tip": "German"
 }
-Rules:
-- tips: one short sentence
+
+Hard rules:
+- If the user's answer is empty, whitespace, or missing, verdict MUST be "incorrect" and reason MUST be "missing".
+- Do not give "correct" to empty answers.
+- tips: one short sentence in German.
 """
 
     prompt = "Hier ist ein deutscher Lesetext:\n\n"

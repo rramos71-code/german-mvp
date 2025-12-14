@@ -154,12 +154,20 @@ if page == "Today's session":
 
         st.subheader("Questions")
         answers = {}
+        missing_qids = []
+
         for q in plan.get("questions", []):
             qid = q.get("id")
             question_text = q.get("question", "")
             if qid is None:
                 continue
-            answers[qid] = st.text_input(question_text, key=f"q_{qid}")
+            val = st.text_input(question_text, key=f"q_{qid}")
+            answers[qid] = val
+            if not (val or "").strip():
+                missing_qids.append(qid)
+
+        if missing_qids:
+            st.warning(f"Please answer all questions before checking. Missing: {', '.join(map(str, missing_qids))}")
 
         st.subheader("Vocabulary")
 
@@ -200,13 +208,12 @@ if page == "Today's session":
         else:
             st.info("No vocabulary items available.")
 
-        if st.button("Check my answers"):
-            if reading_text:
-                feedback = check_answers(reading_text, plan.get("questions", []), answers)
-                st.session_state.feedback = feedback
-            else:
-                st.warning("Cannot check answers without a reading text.")
+        check_disabled = (not reading_text) or (len(missing_qids) > 0)
 
+        if st.button("Check my answers", disabled=check_disabled):
+            feedback = check_answers(reading_text, plan.get("questions", []), answers)
+            st.session_state.feedback = feedback
+    
         if "feedback" in st.session_state:
             st.subheader("Feedback")
             fb = st.session_state.feedback

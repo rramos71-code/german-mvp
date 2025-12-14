@@ -63,28 +63,32 @@ Remember: output only the JSON object, nothing else.
         ]
     )
 
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = "\n".join(line for line in cleaned.splitlines() if not line.strip().startswith("```"))
+
     try:
-        plan = json.loads(content)
+        plan = json.loads(cleaned)
     except json.JSONDecodeError:
-        start = content.find("{")
-        end = content.rfind("}")
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
         if start != -1 and end != -1:
-            json_str = content[start : end + 1]
+            json_str = cleaned[start : end + 1]
             try:
                 plan = json.loads(json_str)
             except json.JSONDecodeError:
-                raise RuntimeError(f"Model returned non JSON content: {content}")
+                raise RuntimeError(f"Model returned non JSON content: {cleaned}")
         else:
-            raise RuntimeError(f"Model returned non JSON content: {content}")
+            raise RuntimeError(f"Model returned non JSON content: {cleaned}")
 
     grammar = plan.get("grammar", {})
     examples = grammar.get("examples", [])
     exercises = grammar.get("exercises", [])
 
     if not isinstance(examples, list) or not 3 <= len(examples) <= 5:
-        raise RuntimeError("Grammar examples must contain between 3 and 5 items.")
+        raise RuntimeError(f"Grammar examples must contain between 3 and 5 items. Raw content: {cleaned}")
     if not isinstance(exercises, list) or len(exercises) != 3:
-        raise RuntimeError("Grammar exercises must contain exactly 3 items.")
+        raise RuntimeError(f"Grammar exercises must contain exactly 3 items. Raw content: {cleaned}")
 
     return plan
 

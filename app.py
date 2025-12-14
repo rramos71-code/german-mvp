@@ -15,9 +15,15 @@ if page == "Today's session":
     if "plan" not in st.session_state:
         st.info("Click the button to generate today's plan.")
         if st.button("Generate today's plan"):
-            st.session_state.plan = get_daily_plan()
+            try:
+                st.session_state.plan = get_daily_plan()
+            except RuntimeError as e:
+                st.error(f"Could not generate plan: {e}")
     elif st.button("Generate today's plan"):
-        st.session_state.plan = get_daily_plan()
+        try:
+            st.session_state.plan = get_daily_plan()
+        except RuntimeError as e:
+            st.error(f"Could not generate plan: {e}")
 
     plan = st.session_state.get("plan")
 

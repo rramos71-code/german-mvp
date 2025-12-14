@@ -333,11 +333,14 @@ Schema:
   ],
   "overall_tip": "German"
 }
-
-Hard rules:
-- If the user's answer is empty, whitespace, or missing, verdict MUST be "incorrect" and reason MUST be "missing".
-- tips: one short sentence in German.
 """
+
+    # 1️⃣ Build missing map deterministically
+    missing_map = {}
+    for q in questions or []:
+        qid = q.get("id")
+        ans = (answers_dict or {}).get(qid, "")
+        missing_map[qid] = not bool(ans and ans.strip())
 
     prompt = "Hier ist ein deutscher Lesetext:\n\n"
     prompt += (reading_text or "") + "\n\n"
@@ -346,8 +349,6 @@ Hard rules:
     for q in questions or []:
         qid = q.get("id")
         q_text = q.get("question", "")
-        if qid is None:
-            continue
         user_answer = (answers_dict or {}).get(qid, "")
         prompt += f"Frage {qid}: {q_text}\nMeine Antwort: {user_answer}\n\n"
 
@@ -357,26 +358,21 @@ Hard rules:
         temperature=0.1,
         max_tokens=900,
     )
-    data = _safe_json_loads(content)
 
-    # Normalize grader output to ids 1..3
-    results = data.get("results", [])
-    by_id = {r.get("id"): r for r in results if isinstance(r, dict)}
-    normalized = []
-    for i in [1, 2, 3]:
-        r = by_id.get(i, {})
-        normalized.append(
-            {
-                "id": i,
-                "verdict": r.get("verdict", "incorrect"),
-                "ideal_answer": r.get("ideal_answer", ""),
-                "tip": r.get("tip", ""),
-                "reason": r.get("reason", "content"),
-            }
-        )
-    data["results"] = normalized
-    data.setdefault("overall_tip", "")
-    return data
+    result = _safe_json_loads(content)
+
+    # 2️⃣ Enforce backend truth
+    for r in result.get("results", []):
+        qid = r.get("id")
+        if missing_map.get(qid):
+            r["verdict"] = "incorrect"
+            r["reason"] = "missing"
+        else:
+            # If model wrongly marked as missing, fix it
+            if r.get("reason") == "missing":
+                r["reason"] = "content"
+
+    return result
 
 
 def check_grammar(grammar, user_answers_dict):

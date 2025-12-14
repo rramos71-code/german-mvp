@@ -7,6 +7,7 @@ from agents import (
     check_answers,
     check_grammar,
 )
+from storage import append_session, load_sessions, make_vocab_csv_rows, utc_now_iso
 
 st.set_page_config(page_title="German Coach MVP", layout="wide")
 
@@ -19,9 +20,38 @@ def _clear_state_by_prefix(prefixes):
             del st.session_state[k]
 
 
+def _calc_scores():
+    reading_score = None
+    grammar_score = None
+
+    fb = st.session_state.get("feedback")
+    if isinstance(fb, dict):
+        reading_score = sum(1 for r in fb.get("results", []) if r.get("verdict") == "correct")
+
+    gfb = st.session_state.get("grammar_feedback")
+    if isinstance(gfb, dict):
+        grammar_score = sum(1 for r in gfb.get("results", []) if r.get("verdict") == "correct")
+
+    return reading_score, grammar_score
+
+
 if page == "Dashboard":
     st.title("German Learning Dashboard")
-    st.write("For now, go to 'Today's session' to start a lesson.")
+
+    sessions = load_sessions(limit=30)
+    if not sessions:
+        st.info("No saved sessions yet. Go to 'Today's session' and click 'Save session'.")
+    else:
+        st.subheader("Recent sessions")
+        # Show latest first
+        for s in reversed(sessions):
+            dt = s.get("timestamp", "")
+            lv = s.get("level", "")
+            tp = s.get("topic", "")
+            rt = s.get("reading_topic", "")
+            rs = s.get("reading_score")
+            gs = s.get("grammar_score")
+            st.markdown(f"- **{dt}** | {lv} | {tp} | {rt} | Reading: {rs}/3 | Grammar: {gs}/3")
 
 
 if page == "Today's session":
@@ -144,11 +174,9 @@ if page == "Today's session":
                 if fb.get("overall_tip"):
                     st.info(fb.get("overall_tip"))
 
-                # Gated solutions toggle
                 if st.toggle("Show ideal answers (reading)", value=False):
                     for r in fb.get("results", []):
                         st.markdown(f"**Frage {r.get('id')} ideale Antwort:** {r.get('ideal_answer')}")
-
             else:
                 st.write(fb)
 
@@ -164,25 +192,21 @@ if page == "Today's session":
                 for ex in examples:
                     st.markdown(f"- {ex}")
 
-            # New button: regenerate exercises only (same grammar topic)
             col_g1, col_g2 = st.columns(2)
             with col_g1:
                 if st.button("New grammar exercises"):
-                    if "plan" not in st.session_state:
-                        st.warning("Generate a full plan first.")
-                    else:
-                        _clear_state_by_prefix(["g_"])
-                        st.session_state.pop("grammar_feedback", None)
-                        try:
-                            grammar_topic = (st.session_state.plan.get("grammar") or {}).get("topic", "")
-                            if not grammar_topic:
-                                st.warning("No grammar topic found. Try 'Regenerate grammar' first.")
-                            else:
-                                new_ex = get_grammar_exercises_only(level=level, grammar_topic=grammar_topic)
-                                st.session_state.plan["grammar"]["exercises"] = new_ex.get("exercises", [])
-                                st.success("New exercises generated.")
-                        except RuntimeError as e:
-                            st.error(f"Could not regenerate grammar exercises: {e}")
+                    _clear_state_by_prefix(["g_"])
+                    st.session_state.pop("grammar_feedback", None)
+                    try:
+                        grammar_topic = (st.session_state.plan.get("grammar") or {}).get("topic", "")
+                        if not grammar_topic:
+                            st.warning("No grammar topic found. Try 'Regenerate grammar' first.")
+                        else:
+                            new_ex = get_grammar_exercises_only(level=level, grammar_topic=grammar_topic)
+                            st.session_state.plan["grammar"]["exercises"] = new_ex.get("exercises", [])
+                            st.success("New exercises generated.")
+                    except RuntimeError as e:
+                        st.error(f"Could not regenerate grammar exercises: {e}")
 
             with col_g2:
                 if st.button("Check grammar"):
@@ -197,18 +221,16 @@ if page == "Today's session":
                     st.session_state.grammar_feedback = feedback
 
             exercises = grammar.get("exercises", [])
-            grammar_answers_live = {}
             for ex in exercises:
                 eid = ex.get("id")
                 instruction = ex.get("instruction", "")
                 prompt = ex.get("prompt", "")
                 if eid is None:
                     continue
-                grammar_answers_live[eid] = st.text_input(f"{instruction}\n{prompt}", key=f"g_{eid}")
+                st.text_input(f"{instruction}\n{prompt}", key=f"g_{eid}")
 
             if "grammar_feedback" in st.session_state:
                 gfb = st.session_state.grammar_feedback
-
                 if isinstance(gfb, dict):
                     for r in gfb.get("results", []):
                         st.markdown(f"**Übung {r.get('id')}** - {r.get('verdict')}")
@@ -217,30 +239,17 @@ if page == "Today's session":
                     if gfb.get("overall_tip"):
                         st.info(gfb.get("overall_tip"))
 
-                    # Gated solutions toggle
                     if st.toggle("Show solutions (grammar)", value=False):
                         for ex in grammar.get("exercises", []):
                             st.markdown(f"**Übung {ex.get('id')} Lösung:** {ex.get('answer')}")
                             if ex.get("answer_explanation"):
                                 st.markdown(f"- {ex.get('answer_explanation')}")
-
                 else:
                     st.write(gfb)
-
         else:
             st.info("Grammar section not available in the plan.")
 
-        # Session summary
-        reading_score = None
-        grammar_score = None
-
-        fb = st.session_state.get("feedback")
-        if isinstance(fb, dict):
-            reading_score = sum(1 for r in fb.get("results", []) if r.get("verdict") == "correct")
-
-        gfb = st.session_state.get("grammar_feedback")
-        if isinstance(gfb, dict):
-            grammar_score = sum(1 for r in gfb.get("results", []) if r.get("verdict") == "correct")
+        reading_score, grammar_score = _calc_scores()
 
         if reading_score is not None or grammar_score is not None:
             st.subheader("Session summary")
@@ -250,3 +259,32 @@ if page == "Today's session":
                 st.metric("Grammar", f"{grammar_score}/3")
             if reading_score is not None and grammar_score is not None:
                 st.success(f"Overall: {reading_score + grammar_score}/6 correct")
+
+        st.subheader("Save and export")
+
+        col_s1, col_s2 = st.columns(2)
+
+        with col_s1:
+            if st.button("Save session"):
+                ts = utc_now_iso()
+                meta = st.session_state.get("plan_meta", {"level": level, "topic": topic})
+                record = {
+                    "timestamp": ts,
+                    "level": meta.get("level", level),
+                    "topic": meta.get("topic", topic),
+                    "reading_topic": plan.get("reading_topic", ""),
+                    "reading_score": reading_score,
+                    "grammar_score": grammar_score,
+                    "vocabulary": plan.get("vocabulary", []),
+                }
+                append_session(record)
+                st.success("Saved.")
+
+        with col_s2:
+            csv_text = make_vocab_csv_rows(plan.get("vocabulary", []), level=meta.get("level", level), topic=meta.get("topic", topic))
+            st.download_button(
+                "Export vocabulary (CSV)",
+                data=csv_text.encode("utf-8"),
+                file_name="vocabulary_export.csv",
+                mime="text/csv",
+            )

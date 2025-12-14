@@ -64,29 +64,39 @@ Remember: output only the JSON object, nothing else.
         ]
     )
 
-    cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = "\n".join(line for line in cleaned.splitlines() if not line.strip().startswith("```"))
+    def parse_candidate(text):
+        cleaned_local = text.strip()
+        if cleaned_local.startswith("```"):
+            cleaned_local = "\n".join(
+                line for line in cleaned_local.splitlines() if not line.strip().startswith("```")
+            )
+        try:
+            return json.loads(cleaned_local), cleaned_local
+        except json.JSONDecodeError:
+            start = cleaned_local.find("{")
+            end = cleaned_local.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                json_str = cleaned_local[start : end + 1]
+                try:
+                    return json.loads(json_str), json_str
+                except json.JSONDecodeError:
+                    try:
+                        return ast.literal_eval(json_str), json_str
+                    except Exception:
+                        pass
+            try:
+                return ast.literal_eval(cleaned_local), cleaned_local
+            except Exception:
+                raise ValueError(cleaned_local)
 
     try:
-        plan = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1:
-            json_str = cleaned[start : end + 1]
-            try:
-                plan = json.loads(json_str)
-            except json.JSONDecodeError:
-                try:
-                    plan = ast.literal_eval(json_str)
-                except Exception:
-                    raise RuntimeError(f"Model returned non JSON content: {cleaned}")
-        else:
-            try:
-                plan = ast.literal_eval(cleaned)
-            except Exception:
-                raise RuntimeError(f"Model returned non JSON content: {cleaned}")
+        plan, cleaned = parse_candidate(content)
+    except ValueError:
+        repaired = _repair_plan_with_llm(content)
+        try:
+            plan, cleaned = parse_candidate(repaired)
+        except ValueError:
+            raise RuntimeError(f"Model returned non JSON content even after repair. Raw: {content}")
 
     grammar = plan.get("grammar", {})
     examples = grammar.get("examples", [])
@@ -98,6 +108,50 @@ Remember: output only the JSON object, nothing else.
         raise RuntimeError(f"Grammar exercises must contain exactly 3 items. Raw content: {cleaned}")
 
     return plan
+
+
+def _repair_plan_with_llm(raw_content: str) -> str:
+    """
+    Ask the LLM to repair malformed or incomplete JSON into the required schema.
+    """
+    repair_system = """
+You are a strict JSON fixer. Convert the provided text into a valid JSON object.
+Rules:
+- Output ONLY the JSON object. No markdown, no code fences, no comments.
+- It must match this schema:
+{
+  "reading_topic": "string",
+  "reading_text": "string",
+  "questions": [
+    {"id": 1, "question": "string"},
+    {"id": 2, "question": "string"},
+    {"id": 3, "question": "string"}
+  ],
+  "vocabulary": [
+    {"word": "German word", "translation": "English translation", "example": "German example sentence"}
+  ],
+  "grammar": {
+    "topic": "string",
+    "explanation": "German explanation, max 6 sentences",
+    "examples": ["3 to 5 German example sentences"],
+    "exercises": [
+      {"id": 1, "instruction": "German instruction", "prompt": "Sentence with ____", "answer": "expected answer", "answer_explanation": "1-2 sentence German explanation"},
+      {"id": 2, "instruction": "German instruction", "prompt": "Sentence with ____", "answer": "expected answer", "answer_explanation": "1-2 sentence German explanation"},
+      {"id": 3, "instruction": "German instruction", "prompt": "Sentence with ____", "answer": "expected answer", "answer_explanation": "1-2 sentence German explanation"}
+    ]
+  }
+}
+- Ensure grammar.examples length is between 3 and 5.
+- Ensure grammar.exercises length is exactly 3 and each prompt includes the blank string "____".
+- If information is missing, fill it reasonably following the study session context (B1-B2 German).
+"""
+    repair_user = f"Here is the malformed content. Fix it into the JSON schema: {raw_content}"
+    return call_llm(
+        [
+            {"role": "system", "content": repair_system},
+            {"role": "user", "content": repair_user},
+        ]
+    )
 
 
 def check_answers(reading_text, questions, answers_dict):

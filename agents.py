@@ -1,3 +1,4 @@
+import ast
 import json
 from llm_client import call_llm
 
@@ -77,9 +78,15 @@ Remember: output only the JSON object, nothing else.
             try:
                 plan = json.loads(json_str)
             except json.JSONDecodeError:
-                raise RuntimeError(f"Model returned non JSON content: {cleaned}")
+                try:
+                    plan = ast.literal_eval(json_str)
+                except Exception:
+                    raise RuntimeError(f"Model returned non JSON content: {cleaned}")
         else:
-            raise RuntimeError(f"Model returned non JSON content: {cleaned}")
+            try:
+                plan = ast.literal_eval(cleaned)
+            except Exception:
+                raise RuntimeError(f"Model returned non JSON content: {cleaned}")
 
     grammar = plan.get("grammar", {})
     examples = grammar.get("examples", [])

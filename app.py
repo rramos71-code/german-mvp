@@ -1,5 +1,12 @@
 import streamlit as st
-from agents import get_daily_plan, get_reading_block, get_grammar_block, check_answers, check_grammar
+from agents import (
+    get_daily_plan,
+    get_reading_block,
+    get_grammar_block,
+    get_grammar_exercises_only,
+    check_answers,
+    check_grammar,
+)
 
 st.set_page_config(page_title="German Coach MVP", layout="wide")
 
@@ -131,16 +138,19 @@ if page == "Today's session":
 
             if isinstance(fb, dict):
                 for r in fb.get("results", []):
-                    st.markdown(f"**Frage {r.get('id')}** — {r.get('verdict')}")
+                    st.markdown(f"**Frage {r.get('id')}** - {r.get('verdict')}")
                     st.markdown(f"- Ideale Antwort: {r.get('ideal_answer')}")
                     st.markdown(f"- Tipp: {r.get('tip')}")
                 if fb.get("overall_tip"):
                     st.info(fb.get("overall_tip"))
+
+                # Gated solutions toggle
+                if st.toggle("Show ideal answers (reading)", value=False):
+                    for r in fb.get("results", []):
+                        st.markdown(f"**Frage {r.get('id')} ideale Antwort:** {r.get('ideal_answer')}")
+
             else:
-                # fallback for old sessions or unexpected output
                 st.write(fb)
-
-
 
         st.subheader("Grammar")
         grammar = plan.get("grammar")
@@ -154,33 +164,89 @@ if page == "Today's session":
                 for ex in examples:
                     st.markdown(f"- {ex}")
 
+            # New button: regenerate exercises only (same grammar topic)
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                if st.button("New grammar exercises"):
+                    if "plan" not in st.session_state:
+                        st.warning("Generate a full plan first.")
+                    else:
+                        _clear_state_by_prefix(["g_"])
+                        st.session_state.pop("grammar_feedback", None)
+                        try:
+                            grammar_topic = (st.session_state.plan.get("grammar") or {}).get("topic", "")
+                            if not grammar_topic:
+                                st.warning("No grammar topic found. Try 'Regenerate grammar' first.")
+                            else:
+                                new_ex = get_grammar_exercises_only(level=level, grammar_topic=grammar_topic)
+                                st.session_state.plan["grammar"]["exercises"] = new_ex.get("exercises", [])
+                                st.success("New exercises generated.")
+                        except RuntimeError as e:
+                            st.error(f"Could not regenerate grammar exercises: {e}")
+
+            with col_g2:
+                if st.button("Check grammar"):
+                    exercises = grammar.get("exercises", [])
+                    grammar_answers = {}
+                    for ex in exercises:
+                        eid = ex.get("id")
+                        if eid is None:
+                            continue
+                        grammar_answers[eid] = st.session_state.get(f"g_{eid}", "")
+                    feedback = check_grammar(grammar, grammar_answers)
+                    st.session_state.grammar_feedback = feedback
+
             exercises = grammar.get("exercises", [])
-            grammar_answers = {}
+            grammar_answers_live = {}
             for ex in exercises:
                 eid = ex.get("id")
                 instruction = ex.get("instruction", "")
                 prompt = ex.get("prompt", "")
                 if eid is None:
                     continue
-                grammar_answers[eid] = st.text_input(f"{instruction}\n{prompt}", key=f"g_{eid}")
-
-            if st.button("Check grammar"):
-                feedback = check_grammar(grammar, grammar_answers)
-                st.session_state.grammar_feedback = feedback
+                grammar_answers_live[eid] = st.text_input(f"{instruction}\n{prompt}", key=f"g_{eid}")
 
             if "grammar_feedback" in st.session_state:
                 gfb = st.session_state.grammar_feedback
 
                 if isinstance(gfb, dict):
                     for r in gfb.get("results", []):
-                        st.markdown(f"**Übung {r.get('id')}** — {r.get('verdict')}")
+                        st.markdown(f"**Übung {r.get('id')}** - {r.get('verdict')}")
                         st.markdown(f"- Korrekt: {r.get('correct_answer')}")
                         st.markdown(f"- Erklärung: {r.get('explanation')}")
                     if gfb.get("overall_tip"):
                         st.info(gfb.get("overall_tip"))
+
+                    # Gated solutions toggle
+                    if st.toggle("Show solutions (grammar)", value=False):
+                        for ex in grammar.get("exercises", []):
+                            st.markdown(f"**Übung {ex.get('id')} Lösung:** {ex.get('answer')}")
+                            if ex.get("answer_explanation"):
+                                st.markdown(f"- {ex.get('answer_explanation')}")
+
                 else:
                     st.write(gfb)
 
-
         else:
             st.info("Grammar section not available in the plan.")
+
+        # Session summary
+        reading_score = None
+        grammar_score = None
+
+        fb = st.session_state.get("feedback")
+        if isinstance(fb, dict):
+            reading_score = sum(1 for r in fb.get("results", []) if r.get("verdict") == "correct")
+
+        gfb = st.session_state.get("grammar_feedback")
+        if isinstance(gfb, dict):
+            grammar_score = sum(1 for r in gfb.get("results", []) if r.get("verdict") == "correct")
+
+        if reading_score is not None or grammar_score is not None:
+            st.subheader("Session summary")
+            if reading_score is not None:
+                st.metric("Reading", f"{reading_score}/3")
+            if grammar_score is not None:
+                st.metric("Grammar", f"{grammar_score}/3")
+            if reading_score is not None and grammar_score is not None:
+                st.success(f"Overall: {reading_score + grammar_score}/6 correct")

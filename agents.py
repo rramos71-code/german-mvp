@@ -1,14 +1,17 @@
 import json
+import re
 from llm_client import call_llm
 
 
 def _safe_json_loads(text: str) -> dict:
     t = (text or "").strip()
-    if not t.startswith("{"):
-        start = t.find("{")
-        end = t.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            t = t[start : end + 1]
+
+    # Best effort: isolate first JSON object
+    start = t.find("{")
+    end = t.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        t = t[start : end + 1]
+
     return json.loads(t)
 
 
@@ -26,22 +29,24 @@ def _normalize_plan(plan: dict) -> dict:
     grammar = plan.get("grammar")
     if not isinstance(grammar, dict):
         grammar = {}
+
     grammar.setdefault("topic", "Grammatik")
     grammar.setdefault("explanation", "")
+
     if not isinstance(grammar.get("examples"), list):
         grammar["examples"] = []
     if not isinstance(grammar.get("exercises"), list):
         grammar["exercises"] = []
-    plan["grammar"] = grammar
 
+    # Examples: 3..5
     examples = [str(x).strip() for x in grammar["examples"] if str(x).strip()]
-    if len(examples) < 3:
-        while len(examples) < 3:
-            examples.append("Beispiel: Ich habe heute Zeit.")
+    while len(examples) < 3:
+        examples.append("Beispiel: Ich habe heute Zeit.")
     if len(examples) > 5:
         examples = examples[:5]
     grammar["examples"] = examples
 
+    # Exercises: exactly 3
     exercises = [x for x in grammar["exercises"] if isinstance(x, dict)]
     exercises = exercises[:3]
     while len(exercises) < 3:
@@ -86,6 +91,16 @@ def _validate_plan(plan: dict) -> None:
             raise RuntimeError("Exercise prompt missing ____")
 
 
+def _word_in_text(word: str, text: str) -> bool:
+    # Robust matching, avoids false positives for short strings
+    w = (word or "").strip()
+    if not w:
+        return False
+    t = (text or "")
+    pattern = r"\b" + re.escape(w) + r"\b"
+    return re.search(pattern, t, flags=re.IGNORECASE) is not None
+
+
 def _validate_vocab(vocab: list, reading_text: str, n_exact: int) -> None:
     if not isinstance(vocab, list):
         raise RuntimeError("Vocabulary is not a list")
@@ -93,7 +108,6 @@ def _validate_vocab(vocab: list, reading_text: str, n_exact: int) -> None:
         raise RuntimeError("Vocabulary length invalid")
 
     seen = set()
-    rt_lower = (reading_text or "").lower()
 
     for item in vocab:
         if not isinstance(item, dict):
@@ -101,39 +115,25 @@ def _validate_vocab(vocab: list, reading_text: str, n_exact: int) -> None:
         w = (item.get("word") or "").strip()
         if not w:
             raise RuntimeError("Vocabulary word missing")
+
         w_lower = w.lower()
         if w_lower in seen:
             raise RuntimeError("Duplicate vocabulary word")
         seen.add(w_lower)
 
-        if rt_lower and w_lower not in rt_lower:
+        if reading_text and not _word_in_text(w, reading_text):
             raise RuntimeError(f"Vocabulary word not found in reading text: {w}")
 
 
 def _session_params(session_length: str):
     if session_length == "10":
-        return {
-            "word_min": 120,
-            "word_max": 160,
-            "vocab_n": 5,
-        }
-    return {
-        "word_min": 180,
-        "word_max": 240,
-        "vocab_n": 8,
-    }
+        return {"word_min": 120, "word_max": 160, "vocab_n": 5}
+    return {"word_min": 180, "word_max": 240, "vocab_n": 8}
 
 
-def get_reading_block(
-    level: str = "B1",
-    topic: str = "Alltag",
-    word_min: int = 150,
-    word_max: int = 200,
-    vocab_n: int = 8,
-) -> dict:
+def get_reading_block(level="B1", topic="Alltag", word_min=150, word_max=200, vocab_n=8) -> dict:
     system_msg = f"""
 You are a German teacher for a {level} learner.
-
 Return ONLY a single valid JSON object.
 
 Schema:
@@ -160,11 +160,6 @@ Hard constraints:
 
     user_msg = f"""
 Create a reading session for topic "{topic}" at level {level}.
-
-- reading_text: {word_min}-{word_max} words in German
-- questions: exactly 3 comprehension questions in German
-- vocabulary: exactly {vocab_n} items taken from the text, each with English translation and German example sentence
-
 Return ONLY the JSON object.
 """
 
@@ -197,14 +192,11 @@ Hard constraints:
 
     user_msg = f"""
 From this reading text, extract exactly {n_items} useful vocabulary items.
-For each: German word (must appear in text), English translation, one German example sentence.
+Return ONLY the JSON object.
 
 Topic: "{topic}"
-
 Reading text:
 \"\"\"{reading_text}\"\"\"
-
-Return ONLY the JSON object.
 """
 
     content = call_llm(
@@ -216,10 +208,9 @@ Return ONLY the JSON object.
     return _safe_json_loads(content)
 
 
-def get_grammar_block(level: str = "B1", topic: str = "Alltag", reading_text: str = "") -> dict:
+def get_grammar_block(level="B1", topic="Alltag", reading_text="") -> dict:
     system_msg = f"""
 You are a German teacher for a {level} learner.
-
 Return ONLY a single valid JSON object.
 
 Schema:
@@ -246,8 +237,9 @@ Hard constraints:
 
     user_msg = f"""
 Create a grammar section for topic "{topic}" at level {level}.
+Align the grammar point with the reading text if possible.
 
-Align the grammar point and examples with this reading text if possible:
+Reading text:
 \"\"\"{reading_context}\"\"\"
 
 Return ONLY the JSON object.
@@ -296,7 +288,7 @@ Return ONLY the JSON object.
     return _safe_json_loads(content)
 
 
-def get_daily_plan(level: str = "B1", topic: str = "Alltag", session_length: str = "20") -> dict:
+def get_daily_plan(level="B1", topic="Alltag", session_length="20") -> dict:
     params = _session_params(session_length)
     vocab_n = params["vocab_n"]
 
@@ -344,7 +336,6 @@ Schema:
 
 Hard rules:
 - If the user's answer is empty, whitespace, or missing, verdict MUST be "incorrect" and reason MUST be "missing".
-- Do not give "correct" to empty answers.
 - tips: one short sentence in German.
 """
 
@@ -366,7 +357,26 @@ Hard rules:
         temperature=0.1,
         max_tokens=900,
     )
-    return _safe_json_loads(content)
+    data = _safe_json_loads(content)
+
+    # Normalize grader output to ids 1..3
+    results = data.get("results", [])
+    by_id = {r.get("id"): r for r in results if isinstance(r, dict)}
+    normalized = []
+    for i in [1, 2, 3]:
+        r = by_id.get(i, {})
+        normalized.append(
+            {
+                "id": i,
+                "verdict": r.get("verdict", "incorrect"),
+                "ideal_answer": r.get("ideal_answer", ""),
+                "tip": r.get("tip", ""),
+                "reason": r.get("reason", "content"),
+            }
+        )
+    data["results"] = normalized
+    data.setdefault("overall_tip", "")
+    return data
 
 
 def check_grammar(grammar, user_answers_dict):
@@ -376,13 +386,15 @@ Return ONLY a single valid JSON object.
 Schema:
 {
   "results": [
-    {"id": 1, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German"},
-    {"id": 2, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German"},
-    {"id": 3, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German"}
+    {"id": 1, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German", "reason": "missing|content"},
+    {"id": 2, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German", "reason": "missing|content"},
+    {"id": 3, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German", "reason": "missing|content"}
   ],
   "overall_tip": "German"
 }
-Rules:
+
+Hard rules:
+- If the user's answer is empty, whitespace, or missing, verdict MUST be "incorrect" and reason MUST be "missing".
 - explanation: one short sentence
 - overall_tip: one short sentence
 """
@@ -418,4 +430,23 @@ Rules:
         temperature=0.1,
         max_tokens=900,
     )
-    return _safe_json_loads(content)
+    data = _safe_json_loads(content)
+
+    # Normalize ids 1..3
+    results = data.get("results", [])
+    by_id = {r.get("id"): r for r in results if isinstance(r, dict)}
+    normalized = []
+    for i in [1, 2, 3]:
+        r = by_id.get(i, {})
+        normalized.append(
+            {
+                "id": i,
+                "verdict": r.get("verdict", "incorrect"),
+                "correct_answer": r.get("correct_answer", ""),
+                "explanation": r.get("explanation", ""),
+                "reason": r.get("reason", "content"),
+            }
+        )
+    data["results"] = normalized
+    data.setdefault("overall_tip", "")
+    return data

@@ -71,7 +71,6 @@ if page == "Today's session":
         index=0,
     )
     session_length = st.sidebar.radio("Session length", ["10", "20"], index=1, format_func=lambda x: f"{x} min")
-
     params = _session_params(session_length)
 
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -137,170 +136,208 @@ if page == "Today's session":
         st.info("Click 'Generate full plan' to start.")
     else:
         meta = st.session_state.get("plan_meta", {})
-        if meta:
-            st.caption(
-                f"Level: {meta.get('level', level)} | Topic: {meta.get('topic', topic)} | Session: {meta.get('session_length', session_length)} min"
-            )
-
-        st.subheader("Reading topic")
-        st.write(plan.get("reading_topic", ""))
-
-        st.subheader("Reading text")
-        reading_text = plan.get("reading_text")
-        if reading_text:
-            st.write(reading_text)
-        else:
-            st.warning("No reading text available in the plan.")
-
-        st.subheader("Questions")
-        answers = {}
-        missing_qids = []
-
-        for q in plan.get("questions", []):
-            qid = q.get("id")
-            question_text = q.get("question", "")
-            if qid is None:
-                continue
-            val = st.text_input(question_text, key=f"q_{qid}")
-            answers[qid] = val
-            if not (val or "").strip():
-                missing_qids.append(qid)
-
-        if missing_qids:
-            st.warning(f"Please answer all questions before checking. Missing: {', '.join(map(str, missing_qids))}")
-
-        st.subheader("Vocabulary")
-
-        col_v1, col_v2 = st.columns(2)
-        with col_v1:
-            if st.button("Regenerate vocabulary"):
-                if not reading_text:
-                    st.warning("No reading text found.")
-                else:
-                    st.session_state.pop("feedback", None)
-                    try:
-                        vb = get_vocab_block(level=level, topic=topic, reading_text=reading_text, n_items=params["vocab_n"])
-                        st.session_state.plan["vocabulary"] = vb.get("vocabulary", [])
-                        st.success("Vocabulary regenerated.")
-                    except RuntimeError as e:
-                        st.error(f"Could not regenerate vocabulary: {e}")
-
-        with col_v2:
-            csv_text = make_vocab_csv_rows(
-                plan.get("vocabulary", []),
-                level=meta.get("level", level),
-                topic=meta.get("topic", topic),
-            )
-            st.download_button(
-                "Export vocabulary (CSV)",
-                data=csv_text.encode("utf-8"),
-                file_name="vocabulary_export.csv",
-                mime="text/csv",
-            )
-
-        vocab = plan.get("vocabulary", [])
-        if vocab:
-            for item in vocab:
-                st.markdown(
-                    f"- **{item.get('word', '')}**: {item.get('translation', '')}\n"
-                    f"  _{item.get('example', '')}_"
-                )
-        else:
-            st.info("No vocabulary items available.")
-
-        check_disabled = (not reading_text) or (len(missing_qids) > 0)
-
-        if st.button("Check my answers", disabled=check_disabled):
-            feedback = check_answers(reading_text, plan.get("questions", []), answers)
-            st.session_state.feedback = feedback
-    
-        if "feedback" in st.session_state:
-            st.subheader("Feedback")
-            fb = st.session_state.feedback
-            if isinstance(fb, dict):
-                for r in fb.get("results", []):
-                    st.markdown(f"**Frage {r.get('id')}** - {r.get('verdict')}")
-                    st.markdown(f"- Ideale Antwort: {r.get('ideal_answer')}")
-                    st.markdown(f"- Tipp: {r.get('tip')}")
-                if fb.get("overall_tip"):
-                    st.info(fb.get("overall_tip"))
-
-                if st.toggle("Show ideal answers (reading)", value=False):
-                    for r in fb.get("results", []):
-                        st.markdown(f"**Frage {r.get('id')} ideale Antwort:** {r.get('ideal_answer')}")
-            else:
-                st.write(fb)
-
-        st.subheader("Grammar")
-        grammar = plan.get("grammar")
-        if grammar:
-            st.write(f"**{grammar.get('topic', '')}**")
-            st.write(grammar.get("explanation", ""))
-
-            examples = grammar.get("examples", [])
-            if examples:
-                st.markdown("**Beispiele:**")
-                for ex in examples:
-                    st.markdown(f"- {ex}")
-
-            col_g1, col_g2 = st.columns(2)
-            with col_g1:
-                if st.button("New grammar exercises"):
-                    _clear_state_by_prefix(["g_"])
-                    st.session_state.pop("grammar_feedback", None)
-                    try:
-                        grammar_topic = (st.session_state.plan.get("grammar") or {}).get("topic", "")
-                        if not grammar_topic:
-                            st.warning("No grammar topic found. Try 'Regenerate grammar' first.")
-                        else:
-                            new_ex = get_grammar_exercises_only(level=level, grammar_topic=grammar_topic)
-                            st.session_state.plan["grammar"]["exercises"] = new_ex.get("exercises", [])
-                            st.success("New exercises generated.")
-                    except RuntimeError as e:
-                        st.error(f"Could not regenerate grammar exercises: {e}")
-
-            with col_g2:
-                if st.button("Check grammar"):
-                    exercises = grammar.get("exercises", [])
-                    grammar_answers = {}
-                    for ex in exercises:
-                        eid = ex.get("id")
-                        if eid is None:
-                            continue
-                        grammar_answers[eid] = st.session_state.get(f"g_{eid}", "")
-                    feedback = check_grammar(grammar, grammar_answers)
-                    st.session_state.grammar_feedback = feedback
-
-            exercises = grammar.get("exercises", [])
-            for ex in exercises:
-                eid = ex.get("id")
-                instruction = ex.get("instruction", "")
-                prompt = ex.get("prompt", "")
-                if eid is None:
-                    continue
-                st.text_input(f"{instruction}\n{prompt}", key=f"g_{eid}")
-
-            if "grammar_feedback" in st.session_state:
-                gfb = st.session_state.grammar_feedback
-                if isinstance(gfb, dict):
-                    for r in gfb.get("results", []):
-                        st.markdown(f"**Übung {r.get('id')}** - {r.get('verdict')}")
-                        st.markdown(f"- Korrekt: {r.get('correct_answer')}")
-                        st.markdown(f"- Erklärung: {r.get('explanation')}")
-                    if gfb.get("overall_tip"):
-                        st.info(gfb.get("overall_tip"))
-
-                    if st.toggle("Show solutions (grammar)", value=False):
-                        for ex in grammar.get("exercises", []):
-                            st.markdown(f"**Übung {ex.get('id')} Lösung:** {ex.get('answer')}")
-                            if ex.get("answer_explanation"):
-                                st.markdown(f"- {ex.get('answer_explanation')}")
-                else:
-                    st.write(gfb)
-        else:
-            st.info("Grammar section not available in the plan.")
+        st.caption(
+            f"Level: {meta.get('level', level)} | Topic: {meta.get('topic', topic)} | Session: {meta.get('session_length', session_length)} min"
+        )
 
         reading_score, grammar_score = _calc_scores()
+
+        st.subheader("Next steps")
+        st.markdown(
+            "- Answer the 3 reading questions\n"
+            "- Check reading\n"
+            "- Fill the 3 grammar blanks\n"
+            "- Check grammar\n"
+            "- Save session"
+        )
+
+        with st.expander("Reading", expanded=True):
+            st.subheader("Reading topic")
+            st.write(plan.get("reading_topic", ""))
+
+            st.subheader("Reading text")
+            reading_text = plan.get("reading_text")
+            if reading_text:
+                st.write(reading_text)
+            else:
+                st.warning("No reading text available in the plan.")
+
+        with st.expander("Questions", expanded=True):
+            answers = {}
+            missing_qids = []
+
+            for q in plan.get("questions", []):
+                qid = q.get("id")
+                question_text = q.get("question", "")
+                if qid is None:
+                    continue
+                val = st.text_input(question_text, key=f"q_{qid}")
+                answers[qid] = val
+                if not (val or "").strip():
+                    missing_qids.append(qid)
+
+            if missing_qids:
+                st.warning(f"Please answer all questions before checking. Missing: {', '.join(map(str, missing_qids))}")
+
+            check_disabled = (not plan.get("reading_text")) or (len(missing_qids) > 0)
+
+            if st.button("Check my answers", disabled=check_disabled):
+                feedback = check_answers(plan.get("reading_text", ""), plan.get("questions", []), answers)
+                st.session_state.feedback = feedback
+
+            if "feedback" in st.session_state:
+                st.subheader("Feedback")
+                fb = st.session_state.feedback
+                if isinstance(fb, dict):
+                    for r in fb.get("results", []):
+                        verdict = r.get("verdict", "")
+                        reason = r.get("reason", "")
+                        label = f"Frage {r.get('id')}"
+                        if reason == "missing":
+                            st.markdown(f"**{label}** - incorrect (no answer)")
+                        else:
+                            st.markdown(f"**{label}** - {verdict}")
+                        st.markdown(f"- Ideale Antwort: {r.get('ideal_answer')}")
+                        st.markdown(f"- Tipp: {r.get('tip')}")
+                    if fb.get("overall_tip"):
+                        st.info(fb.get("overall_tip"))
+
+                    if st.toggle("Show ideal answers (reading)", value=False):
+                        for r in fb.get("results", []):
+                            st.markdown(f"**Frage {r.get('id')} ideale Antwort:** {r.get('ideal_answer')}")
+                else:
+                    st.write(fb)
+
+        with st.expander("Vocabulary", expanded=False):
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                if st.button("Regenerate vocabulary"):
+                    reading_text = plan.get("reading_text", "")
+                    if not reading_text:
+                        st.warning("No reading text found.")
+                    else:
+                        st.session_state.pop("feedback", None)
+                        try:
+                            vb = get_vocab_block(
+                                level=level,
+                                topic=topic,
+                                reading_text=reading_text,
+                                n_items=params["vocab_n"],
+                            )
+                            st.session_state.plan["vocabulary"] = vb.get("vocabulary", [])
+                            st.success("Vocabulary regenerated.")
+                        except RuntimeError as e:
+                            st.error(f"Could not regenerate vocabulary: {e}")
+
+            with col_v2:
+                csv_text = make_vocab_csv_rows(
+                    plan.get("vocabulary", []),
+                    level=meta.get("level", level),
+                    topic=meta.get("topic", topic),
+                )
+                st.download_button(
+                    "Export vocabulary (CSV)",
+                    data=csv_text.encode("utf-8"),
+                    file_name="vocabulary_export.csv",
+                    mime="text/csv",
+                )
+
+            vocab = plan.get("vocabulary", [])
+            if vocab:
+                for item in vocab:
+                    st.markdown(
+                        f"- **{item.get('word', '')}**: {item.get('translation', '')}\n"
+                        f"  _{item.get('example', '')}_"
+                    )
+            else:
+                st.info("No vocabulary items available.")
+
+        with st.expander("Grammar", expanded=False):
+            grammar = plan.get("grammar")
+            if grammar:
+                st.write(f"**{grammar.get('topic', '')}**")
+                st.write(grammar.get("explanation", ""))
+
+                examples = grammar.get("examples", [])
+                if examples:
+                    st.markdown("**Beispiele:**")
+                    for ex in examples:
+                        st.markdown(f"- {ex}")
+
+                col_g1, col_g2, col_g3 = st.columns(3)
+
+                with col_g1:
+                    if st.button("New grammar exercises"):
+                        _clear_state_by_prefix(["g_"])
+                        st.session_state.pop("grammar_feedback", None)
+                        try:
+                            grammar_topic = (st.session_state.plan.get("grammar") or {}).get("topic", "")
+                            if not grammar_topic:
+                                st.warning("No grammar topic found. Try 'Regenerate grammar' first.")
+                            else:
+                                new_ex = get_grammar_exercises_only(level=level, grammar_topic=grammar_topic)
+                                st.session_state.plan["grammar"]["exercises"] = new_ex.get("exercises", [])
+                                st.success("New exercises generated.")
+                        except RuntimeError as e:
+                            st.error(f"Could not regenerate grammar exercises: {e}")
+
+                exercises = grammar.get("exercises", [])
+                grammar_missing = []
+                for ex in exercises:
+                    eid = ex.get("id")
+                    instruction = ex.get("instruction", "")
+                    prompt = ex.get("prompt", "")
+                    if eid is None:
+                        continue
+                    val = st.text_input(f"{instruction}\n{prompt}", key=f"g_{eid}")
+                    if not (val or "").strip():
+                        grammar_missing.append(eid)
+
+                if grammar_missing:
+                    st.warning(f"Please fill all grammar answers before checking. Missing: {', '.join(map(str, grammar_missing))}")
+
+                grammar_check_disabled = len(grammar_missing) > 0
+
+                with col_g2:
+                    if st.button("Check grammar", disabled=grammar_check_disabled):
+                        grammar_answers = {}
+                        for ex in exercises:
+                            eid = ex.get("id")
+                            if eid is None:
+                                continue
+                            grammar_answers[eid] = st.session_state.get(f"g_{eid}", "")
+                        feedback = check_grammar(grammar, grammar_answers)
+                        st.session_state.grammar_feedback = feedback
+
+                with col_g3:
+                    if "grammar_feedback" in st.session_state and st.button("Clear grammar feedback"):
+                        st.session_state.pop("grammar_feedback", None)
+
+                if "grammar_feedback" in st.session_state:
+                    gfb = st.session_state.grammar_feedback
+                    if isinstance(gfb, dict):
+                        for r in gfb.get("results", []):
+                            verdict = r.get("verdict", "")
+                            reason = r.get("reason", "")
+                            label = f"Übung {r.get('id')}"
+                            if reason == "missing":
+                                st.markdown(f"**{label}** - incorrect (no answer)")
+                            else:
+                                st.markdown(f"**{label}** - {verdict}")
+                            st.markdown(f"- Korrekt: {r.get('correct_answer')}")
+                            st.markdown(f"- Erklärung: {r.get('explanation')}")
+                        if gfb.get("overall_tip"):
+                            st.info(gfb.get("overall_tip"))
+
+                        if st.toggle("Show solutions (grammar)", value=False):
+                            for ex in grammar.get("exercises", []):
+                                st.markdown(f"**Übung {ex.get('id')} Lösung:** {ex.get('answer')}")
+                                if ex.get("answer_explanation"):
+                                    st.markdown(f"- {ex.get('answer_explanation')}")
+                    else:
+                        st.write(gfb)
+            else:
+                st.info("Grammar section not available in the plan.")
 
         if reading_score is not None or grammar_score is not None:
             st.subheader("Session summary")
@@ -311,19 +348,18 @@ if page == "Today's session":
             if reading_score is not None and grammar_score is not None:
                 st.success(f"Overall: {reading_score + grammar_score}/6 correct")
 
-        st.subheader("Save")
-
-        if st.button("Save session"):
-            ts = utc_now_iso()
-            record = {
-                "timestamp": ts,
-                "level": meta.get("level", level),
-                "topic": meta.get("topic", topic),
-                "session_length": meta.get("session_length", session_length),
-                "reading_topic": plan.get("reading_topic", ""),
-                "reading_score": reading_score,
-                "grammar_score": grammar_score,
-                "vocabulary": plan.get("vocabulary", []),
-            }
-            append_session(record)
-            st.success("Saved.")
+        with st.expander("Save", expanded=False):
+            if st.button("Save session"):
+                ts = utc_now_iso()
+                record = {
+                    "timestamp": ts,
+                    "level": meta.get("level", level),
+                    "topic": meta.get("topic", topic),
+                    "session_length": meta.get("session_length", session_length),
+                    "reading_topic": plan.get("reading_topic", ""),
+                    "reading_score": reading_score,
+                    "grammar_score": grammar_score,
+                    "vocabulary": plan.get("vocabulary", []),
+                }
+                append_session(record)
+                st.success("Saved.")

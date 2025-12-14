@@ -127,7 +127,13 @@ if page == "Today's session":
 
         if "feedback" in st.session_state:
             st.subheader("Feedback")
-            st.write(st.session_state.feedback)
+            fb = st.session_state.feedback
+            for r in fb.get("results", []):
+                st.markdown(f"**Frage {r.get('id')}** — {r.get('verdict')}")
+                st.markdown(f"- Ideale Antwort: {r.get('ideal_answer')}")
+                st.markdown(f"- Tipp: {r.get('tip')}")
+            st.info(fb.get("overall_tip", ""))
+
 
         st.subheader("Grammar")
         grammar = plan.get("grammar")
@@ -156,6 +162,12 @@ if page == "Today's session":
                 st.session_state.grammar_feedback = feedback
 
             if "grammar_feedback" in st.session_state:
-                st.write(st.session_state.grammar_feedback)
+                gfb = st.session_state.grammar_feedback
+                for r in gfb.get("results", []):
+                    st.markdown(f"**Übung {r.get('id')}** — {r.get('verdict')}")
+                    st.markdown(f"- Korrekt: {r.get('correct_answer')}")
+                    st.markdown(f"- Erklärung: {r.get('explanation')}")
+                st.info(gfb.get("overall_tip", ""))
+
         else:
             st.info("Grammar section not available in the plan.")

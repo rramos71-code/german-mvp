@@ -211,12 +211,23 @@ def _validate_plan(plan: dict) -> None:
 
 
 def check_answers(reading_text, questions, answers_dict):
+    system_msg = """
+Return ONLY a single valid JSON object. No markdown, no extra text.
+
+Schema:
+{
+  "results": [
+    {"id": 1, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"},
+    {"id": 2, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"},
+    {"id": 3, "verdict": "correct|partly|incorrect", "ideal_answer": "German", "tip": "German"}
+  ],
+  "overall_tip": "German"
+}
+"""
+
     prompt = "Hier ist ein deutscher Lesetext:\n\n"
     prompt += (reading_text or "") + "\n\n"
-    prompt += (
-        "Hier sind die Verständnisfragen und meine Antworten.\n"
-        "Gib bitte auf Deutsch kurzes Feedback und die richtigen Antworten.\n"
-    )
+    prompt += "Bewerte meine Antworten zu den Verständnisfragen.\n\n"
 
     for q in questions or []:
         qid = q.get("id")
@@ -224,42 +235,63 @@ def check_answers(reading_text, questions, answers_dict):
         if qid is None:
             continue
         user_answer = (answers_dict or {}).get(qid, "")
-        prompt += f"\nFrage {qid}: {q_text}\nMeine Antwort: {user_answer}\n"
+        prompt += f"Frage {qid}: {q_text}\nMeine Antwort: {user_answer}\n\n"
 
-    return call_llm([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=600)
+    content = call_llm(
+        [{"role": "system", "content": system_msg},
+         {"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+        max_tokens=900,
+    )
+    return _safe_json_loads(content)
 
 
 def check_grammar(grammar, user_answers_dict):
+    system_msg = """
+Return ONLY a single valid JSON object. No markdown, no extra text.
+
+Schema:
+{
+  "results": [
+    {"id": 1, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German"},
+    {"id": 2, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German"},
+    {"id": 3, "verdict": "correct|incorrect", "correct_answer": "string", "explanation": "German"}
+  ],
+  "overall_tip": "German"
+}
+"""
+
     topic = (grammar or {}).get("topic", "")
     explanation = (grammar or {}).get("explanation", "")
-    examples = (grammar or {}).get("examples", [])
     exercises = (grammar or {}).get("exercises", [])
 
     prompt = (
-        "Du bist ein freundlicher Deutschlehrer (B1-B2). "
-        "Bewerte meine Grammatikübungen und gib kurzes Feedback auf Deutsch.\n"
-        "Für jede Übung: 'Richtig' oder 'Nicht ganz'. "
-        "Falls falsch: korrekte Lösung und eine knappe Erklärung (1 Satz).\n"
-        "Zum Schluss: ein kurzer Tipp zum Grammatikthema.\n\n"
-        f"Grammatikthema: {topic}\n"
-        f"Erklärung: {explanation}\n"
-        "Beispiele:\n"
+        "Bewerte meine Antworten zu den Grammatikübungen.\n"
+        "Antworte streng nach dem JSON Schema.\n\n"
+        f"Thema: {topic}\n"
+        f"Erklärung: {explanation}\n\n"
     )
 
-    for ex in examples or []:
-        prompt += f"- {ex}\n"
-
-    prompt += "\nÜbungen:\n"
-    for exercise in exercises or []:
-        eid = exercise.get("id")
-        prompt_text = exercise.get("prompt", "")
-        expected = exercise.get("answer", "")
-        prompt += f"Übung {eid}: {prompt_text}\nErwartete Antwort: {expected}\n"
-
-    prompt += "\nMeine Antworten:\n"
-    for exercise in exercises or []:
-        eid = exercise.get("id")
+    for ex in exercises or []:
+        eid = ex.get("id")
+        instruction = ex.get("instruction", "")
+        prompt_text = ex.get("prompt", "")
+        expected = ex.get("answer", "")
         user_answer = (user_answers_dict or {}).get(eid, "")
-        prompt += f"Übung {eid}: {user_answer}\n"
+        prompt += (
+            f"Übung {eid}:\n"
+            f"Anweisung: {instruction}\n"
+            f"Aufgabe: {prompt_text}\n"
+            f"Erwartete Antwort: {expected}\n"
+            f"Meine Antwort: {user_answer}\n\n"
+        )
 
-    return call_llm([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=700)
+    content = call_llm(
+        [{"role": "system", "content": system_msg},
+         {"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+        max_tokens=900,
+    )
+    return _safe_json_loads(content)
